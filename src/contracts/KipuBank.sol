@@ -1,31 +1,36 @@
-
-// SPDX-License-Identifier: MIT
+//SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
-/*///////////////////////////////////
-             Imports
-///////////////////////////////////*/
+/*///////////////////////
+        Imports
+///////////////////////*/
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+//import {ETHDevPackNFT} from "src/m3-projects/ETHDevPackNFT.sol";
 
-/*///////////////////////////////////
-           Interfaces
-///////////////////////////////////*/
+/*///////////////////////
+        Libraries
+///////////////////////*/
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-/*///////////////////////////////////
-            Libraries
-///////////////////////////////////*/
+/*///////////////////////
+        Interfaces
+///////////////////////*/
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+
 
 /** 
- * @title KipuBank
+ * @title KipuBank v2 
  * @author Leandro Masotti
  * @notice KipuBank permite a los usuarios depositar ETH en bóvedas personales y retirar hasta un límite por transacción.
  * @dev Implementa buenas prácticas: errores personalizados, checks-effects-interactions, nonReentrant, eventos, NatSpec.
  */ 
-contract KipuBank {
-
+contract KipuBankV2 is Ownable {
 
     /*///////////////////////////////////
             Type declarations
     ///////////////////////////////////*/
+    using SafeERC20 for IERC20;
 
     /*///////////////////////////////////
             State variables
@@ -54,6 +59,17 @@ contract KipuBank {
 
     /// @notice Per-user counters for withdrawals.
     mapping(address => uint256) private _userWithdrawalsCount;
+
+    ///@notice variable inmutable para almacenar la dirección de USDC
+    IERC20 immutable i_usdc;
+
+    ///@notice variable constante para almacenar el latido (heartbeat) del Data Feed
+    uint16 constant ORACLE_HEARTBEAT = 3600;
+    ///@notice variable constante para almacenar el factor de decimales
+    uint256 constant DECIMAL_FACTOR = 1 * 10 ** 20;
+
+    ///@notice variable para almacenar la dirección del Chainlink Feed
+    AggregatorV3Interface public s_feeds; //0x694AA1769357215DE4FAC081bf1f309aDC325306 Ethereum ETH/USD
 
     /*///////////////////////////////////
                 Events
@@ -106,6 +122,12 @@ contract KipuBank {
     /// @param amount The amount of ETH attempted to be transferred.
     error KB_TransferFailed(address to, uint256 amount);
 
+    ///@notice error emitido cuando el retorno del oráculo es incorrecto
+    error KipuBank_OracleCompromised();
+
+    ///@notice error emitido cuando la última actualización del oráculo supera el heartbeat
+    error KipuBank_StalePrice();
+
     /*///////////////////////////////////
                 Modifiers
     ///////////////////////////////////*/
@@ -127,11 +149,15 @@ contract KipuBank {
      * @dev Uses checks-effects-interactions. Emits `Deposit`.
      * @dev public so it can be called from other contracts if needed; also provide `receive`.
      */
-    function deposit() external payable amountPositive(msg.value) {
+    function depositETH() external payable amountPositive(msg.value) {
+
+         uint256 amountDonatedInUSD = convertEthInUSD(msg.value);
+
         _beforeDeposit(msg.sender, msg.value);
 
         // effects
-        _balances[msg.sender] += msg.value;
+        //_balances[msg.sender] += msg.value;
+        _balances[msg.sender] = _balances[msg.sender] + amountDonatedInUSD;
         _totalBankBalance += msg.value;
 
         // bookkeeping
@@ -142,12 +168,33 @@ contract KipuBank {
     }
 
     /**
+     * @notice Deposit native ETH into the caller's personal vault.
+     * @dev Uses checks-effects-interactions. Emits `Deposit`.
+     * @dev public so it can be called from other contracts if needed; also provide `receive`.
+     */
+    function depositUSDC(uint256 _usdcAmount) external {
+        _beforeDeposit(msg.sender, _usdcAmount);
+
+        // effects
+        _balances[msg.sender] += _usdcAmount;
+        _totalBankBalance += _usdcAmount;
+
+        // bookkeeping
+        _incrementDepositCounters(msg.sender);
+
+        // interactions (none external except emitting event)
+        emit KipuBank_Deposit(msg.sender, _usdcAmount, _balances[msg.sender]);
+
+        i_usdc.safeTransferFrom(msg.sender, address(this), _usdcAmount);
+    }
+
+    /**
      * @notice Withdraw up to `WITHDRAW_LIMIT_PER_TX` from caller's personal vault.
      * @param amount The amount to withdraw (wei).
      * @dev Enforces per-transaction withdrawal limit, user's balance, and uses nonReentrant.
      * @dev Uses checks-effects-interactions: update state then perform transfer.
      */
-    function withdraw(uint256 amount) external amountPositive(amount) {
+    function withdraw(uint256 amount) external onlyOwner amountPositive(amount) {
         // checks
         if (amount > WITHDRAW_LIMIT_PER_TX) revert KB_WithdrawLimitExceeded(amount, WITHDRAW_LIMIT_PER_TX);
 
@@ -211,6 +258,29 @@ contract KipuBank {
         return _userWithdrawalsCount[account];
     }
 
+    /**
+     * @notice función interna para realizar la conversión de decimales de ETH a USDC
+     * @param _ethAmount la cantidad de ETH a ser convertida
+     * @return convertedAmount_ el resultado del cálculo.
+     */
+    function convertEthInUSD(uint256 _ethAmount) internal view returns (uint256 convertedAmount_) {
+        convertedAmount_ = (_ethAmount * chainlinkFeed()) / DECIMAL_FACTOR;
+    }
+
+    /**
+     * @notice función para consultar el precio en USD del ETH
+     * @return ethUSDPrice_ el precio provisto por el oráculo.
+     * @dev esta es una implementación simplificada, y no sigue completamente las buenas prácticas
+     */
+    function chainlinkFeed() internal view returns (uint256 ethUSDPrice_) {
+        (, int256 ethUSDPrice,, uint256 updatedAt,) = s_feeds.latestRoundData();
+
+        if (ethUSDPrice == 0) revert KipuBank_OracleCompromised();
+        if (block.timestamp - updatedAt > ORACLE_HEARTBEAT) revert KipuBank_StalePrice();
+
+        ethUSDPrice_ = uint256(ethUSDPrice);
+    }
+
     /*/////////////////////////
             constructor
     /////////////////////////*/
@@ -219,9 +289,11 @@ contract KipuBank {
     * @notice Deploy the KipuBank with given global cap and per-transaction withdraw limit.
     * @param _bankCap The maximum total ETH the contract may hold (in wei).
     */
-    constructor(uint256 _bankCap){
+    constructor(uint256 _bankCap, address _feed, address _usdc, address _owner) Ownable(_owner){
         if(_bankCap <= 0) revert KB_BankCapMustBePositive(); // brief sanity check (constructor only)
         i_bankCap = _bankCap;
+        s_feeds = AggregatorV3Interface(_feed);
+        i_usdc = IERC20(_usdc);
     }
 
     /*/////////////////////////
