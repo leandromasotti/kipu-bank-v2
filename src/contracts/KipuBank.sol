@@ -5,7 +5,6 @@ pragma solidity ^0.8.30;
         Imports
 ///////////////////////*/
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import "hardhat/console.sol";
 //import {ETHDevPackNFT} from "src/m3-projects/ETHDevPackNFT.sol";
 
 /*///////////////////////
@@ -153,8 +152,6 @@ contract KipuBank is Ownable {
      */
     function depositETH() external payable amountPositive(msg.value) {
 
-        console.log("start deposit");
-        console.log("msg.value: ", msg.value);
         uint256 amountInUSD = convertEthInUSD(msg.value);
 
         _beforeDeposit(msg.sender, msg.value);
@@ -269,8 +266,6 @@ contract KipuBank is Ownable {
      * @return convertedAmount_ el resultado del cálculo.
      */
     function convertEthInUSD(uint256 _ethAmount) internal view returns (uint256 convertedAmount_) {
-        console.log("convertEthInUSD: ", _ethAmount);
-        console.log("DECIMAL_FACTOR: ", DECIMAL_FACTOR);
         convertedAmount_ = (_ethAmount * chainlinkFeed()) / DECIMAL_FACTOR;
     }
 
