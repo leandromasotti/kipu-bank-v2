@@ -5,6 +5,7 @@ pragma solidity ^0.8.30;
         Imports
 ///////////////////////*/
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import "hardhat/console.sol";
 //import {ETHDevPackNFT} from "src/m3-projects/ETHDevPackNFT.sol";
 
 /*///////////////////////
@@ -25,7 +26,7 @@ import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interf
  * @notice KipuBank permite a los usuarios depositar ETH en bóvedas personales y retirar hasta un límite por transacción.
  * @dev Implementa buenas prácticas: errores personalizados, checks-effects-interactions, nonReentrant, eventos, NatSpec.
  */ 
-contract KipuBankV2 is Ownable {
+contract KipuBank is Ownable {
 
     /*///////////////////////////////////
             Type declarations
@@ -36,7 +37,7 @@ contract KipuBankV2 is Ownable {
             State variables
     ///////////////////////////////////*/
     
-    ///@notice Immutable global cap for the total funds that can be held by the contract (in wei).
+    ///@notice Immutable global cap for the total funds that can be held by the contract (in USDC).
     uint256 public immutable i_bankCap;
 
     ///@notice The maximum amount a user may withdraw in a single transaction (in wei).
@@ -45,8 +46,8 @@ contract KipuBankV2 is Ownable {
     /// @notice Mapping de users => their vault balance (in wei).
     mapping(address => uint256) private _balances;
 
-    /// @notice Total ETH currently held by the bank (in wei).
-    uint256 private _totalBankBalance;
+    // @notice Total USDC currently held by the bank (in USDC).
+    uint256 private _totalUSDCBankBalance;
 
     /// @notice Global counter: total number of deposit operations executed on the contract.
     uint256 public totalDepositsCount;
@@ -65,6 +66,7 @@ contract KipuBankV2 is Ownable {
 
     ///@notice variable constante para almacenar el latido (heartbeat) del Data Feed
     uint16 constant ORACLE_HEARTBEAT = 3600;
+
     ///@notice variable constante para almacenar el factor de decimales
     uint256 constant DECIMAL_FACTOR = 1 * 10 ** 20;
 
@@ -151,14 +153,15 @@ contract KipuBankV2 is Ownable {
      */
     function depositETH() external payable amountPositive(msg.value) {
 
-         uint256 amountDonatedInUSD = convertEthInUSD(msg.value);
+        console.log("start deposit");
+        console.log("msg.value: ", msg.value);
+        uint256 amountInUSD = convertEthInUSD(msg.value);
 
         _beforeDeposit(msg.sender, msg.value);
 
         // effects
-        //_balances[msg.sender] += msg.value;
-        _balances[msg.sender] = _balances[msg.sender] + amountDonatedInUSD;
-        _totalBankBalance += msg.value;
+        _balances[msg.sender] = _balances[msg.sender] + amountInUSD;
+        _totalUSDCBankBalance += amountInUSD;
 
         // bookkeeping
         _incrementDepositCounters(msg.sender);
@@ -177,7 +180,7 @@ contract KipuBankV2 is Ownable {
 
         // effects
         _balances[msg.sender] += _usdcAmount;
-        _totalBankBalance += _usdcAmount;
+        _totalUSDCBankBalance += _usdcAmount;
 
         // bookkeeping
         _incrementDepositCounters(msg.sender);
@@ -185,7 +188,7 @@ contract KipuBankV2 is Ownable {
         // interactions (none external except emitting event)
         emit KipuBank_Deposit(msg.sender, _usdcAmount, _balances[msg.sender]);
 
-        i_usdc.safeTransferFrom(msg.sender, address(this), _usdcAmount);
+        //i_usdc.safeTransferFrom(msg.sender, address(this), _usdcAmount);
     }
 
     /**
@@ -197,8 +200,10 @@ contract KipuBankV2 is Ownable {
     function withdraw(uint256 amount) external onlyOwner amountPositive(amount) {
         // checks
         if (amount > WITHDRAW_LIMIT_PER_TX) revert KB_WithdrawLimitExceeded(amount, WITHDRAW_LIMIT_PER_TX);
-
+       
         uint256 userBal = _balances[msg.sender];
+        //uint256 usdcBalance = i_usdc.balanceOf(address(this));
+
         if (amount > userBal) revert KB_InsufficientBalance(msg.sender, userBal, amount);
 
         // effects
@@ -206,7 +211,7 @@ contract KipuBankV2 is Ownable {
             // safe because amount <= userBal
             _balances[msg.sender] = userBal - amount;
         }
-        _totalBankBalance -= amount;
+        _totalUSDCBankBalance -= amount;
         _incrementWithdrawalCounters(msg.sender);
 
         // interaction
@@ -237,7 +242,7 @@ contract KipuBankV2 is Ownable {
      * @return totalBalance Total bank balance in wei.
      */
     function getTotalBankBalance() external view returns (uint256 totalBalance) {
-        return _totalBankBalance;
+        return _totalUSDCBankBalance;
     }
 
     /**
@@ -264,6 +269,8 @@ contract KipuBankV2 is Ownable {
      * @return convertedAmount_ el resultado del cálculo.
      */
     function convertEthInUSD(uint256 _ethAmount) internal view returns (uint256 convertedAmount_) {
+        console.log("convertEthInUSD: ", _ethAmount);
+        console.log("DECIMAL_FACTOR: ", DECIMAL_FACTOR);
         convertedAmount_ = (_ethAmount * chainlinkFeed()) / DECIMAL_FACTOR;
     }
 
@@ -274,10 +281,10 @@ contract KipuBankV2 is Ownable {
      */
     function chainlinkFeed() internal view returns (uint256 ethUSDPrice_) {
         (, int256 ethUSDPrice,, uint256 updatedAt,) = s_feeds.latestRoundData();
-
+        
         if (ethUSDPrice == 0) revert KipuBank_OracleCompromised();
         if (block.timestamp - updatedAt > ORACLE_HEARTBEAT) revert KipuBank_StalePrice();
-
+        
         ethUSDPrice_ = uint256(ethUSDPrice);
     }
 
@@ -287,7 +294,7 @@ contract KipuBankV2 is Ownable {
 
     /**
     * @notice Deploy the KipuBank with given global cap and per-transaction withdraw limit.
-    * @param _bankCap The maximum total ETH the contract may hold (in wei).
+    * @param _bankCap The maximum total USDC the contract may hold (in USDC).
     */
     constructor(uint256 _bankCap, address _feed, address _usdc, address _owner) Ownable(_owner){
         if(_bankCap <= 0) revert KB_BankCapMustBePositive(); // brief sanity check (constructor only)
@@ -310,7 +317,7 @@ contract KipuBankV2 is Ownable {
         _beforeDeposit(msg.sender, msg.value);
 
         _balances[msg.sender] += msg.value;
-        _totalBankBalance += msg.value;
+        _totalUSDCBankBalance += msg.value;
 
         _incrementDepositCounters(msg.sender);
 
@@ -350,7 +357,7 @@ contract KipuBankV2 is Ownable {
      */
     function _beforeDeposit(address from, uint256 amount) private view {
         // Check total cap
-        uint256 newTotal = _totalBankBalance + amount;
+        uint256 newTotal = _totalUSDCBankBalance + amount;
         if (newTotal > i_bankCap) revert KB_BankCapExceeded(newTotal, i_bankCap);
 
         (from);
