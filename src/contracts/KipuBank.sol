@@ -157,7 +157,7 @@ contract KipuBank is Ownable {
         _beforeDeposit(msg.sender, msg.value);
 
         // effects
-        _balances[msg.sender] = _balances[msg.sender] + amountInUSD;
+        _balances[msg.sender] += amountInUSD;
         _totalUSDCBankBalance += amountInUSD;
 
         // bookkeeping
@@ -176,6 +176,7 @@ contract KipuBank is Ownable {
         _beforeDeposit(msg.sender, _usdcAmount);
 
         // effects
+        uint256 usdcBalance = _usdcAmount + _balances[msg.sender];
         _balances[msg.sender] += _usdcAmount;
         _totalUSDCBankBalance += _usdcAmount;
 
@@ -183,7 +184,7 @@ contract KipuBank is Ownable {
         _incrementDepositCounters(msg.sender);
 
         // interactions (none external except emitting event)
-        emit KipuBank_Deposit(msg.sender, _usdcAmount, _balances[msg.sender]);
+        emit KipuBank_Deposit(msg.sender, _usdcAmount, usdcBalance);
 
         //i_usdc.safeTransferFrom(msg.sender, address(this), _usdcAmount);
     }
@@ -203,10 +204,13 @@ contract KipuBank is Ownable {
 
         if (amount > userBal) revert KB_InsufficientBalance(msg.sender, userBal, amount);
 
+        uint256 totalBalance = 0;
+        
         // effects
         unchecked {
             // safe because amount <= userBal
-            _balances[msg.sender] = userBal - amount;
+            totalBalance = userBal - amount;
+            _balances[msg.sender] = totalBalance;
         }
         _totalUSDCBankBalance -= amount;
         _incrementWithdrawalCounters(msg.sender);
@@ -214,7 +218,7 @@ contract KipuBank is Ownable {
         // interaction
         _safeTransfer(payable(msg.sender), amount);
 
-        emit KipuBank_Withdrawal(msg.sender, amount, _balances[msg.sender]);
+        emit KipuBank_Withdrawal(msg.sender, amount, totalBalance);
     }
 
     /**
@@ -310,6 +314,7 @@ contract KipuBank is Ownable {
         // call internal deposit logic to avoid external call to `deposit()`
         if (msg.value == 0) revert KB_ZeroAmount();
         _beforeDeposit(msg.sender, msg.value);
+
 
         _balances[msg.sender] += msg.value;
         _totalUSDCBankBalance += msg.value;
